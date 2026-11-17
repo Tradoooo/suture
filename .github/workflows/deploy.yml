@@ -14,7 +14,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: pages
+  # Groupe « pages-publish » et non « pages » : le 17/11 un run anterior,
+  # lance avec l'ancien executeur self-hosted, etait reste en file dans le
+  # groupe « pages » sans pouvoir demarrer (poste suture-pc eteint) et
+  # bloquait toute publication. Un groupe dedie laisse ces runs orphelins
+  # sans jamais empecher la publication en cours.
+  group: pages-publish
   cancel-in-progress: false
 
 permissions:
