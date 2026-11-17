@@ -1,10 +1,43 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLang } from "../../i18n/lang";
 import { useNavigation } from "../../router";
-import { useStore } from "../../store";
+import { useStore, type StoreAdapter } from "../../store";
 import { translateScreen } from "./messages";
 import { buildHistoryRows, historyCount, isEmptyHistory } from "./cell-history-model";
 import "./cell-history.css";
+
+/**
+ * Reads the history of the chosen cell. The store object is rebuilt on every
+ * state change, so it is read through a ref: the read below depends on the
+ * cell (sheetId, ref) only, never on the snapshot — depending on the store
+ * identity used to loop until React gave up (error #185).
+ */
+function useCellHistory(
+  store: StoreAdapter,
+  sheetId: number | undefined,
+  ref: string | undefined,
+): { loading: boolean; error: string | null } {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const storeRef = useRef(store);
+  useEffect(() => {
+    storeRef.current = store;
+  }, [store]);
+
+  useEffect(() => {
+    if (sheetId === undefined || ref === undefined) return;
+    setLoading(true);
+    setError(null);
+    void storeRef.current
+      .showCellHistory(sheetId, ref)
+      .catch((reason: unknown) => {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => setLoading(false));
+  }, [sheetId, ref]);
+
+  return { loading, error };
+}
 
 /**
  * Screen 5 — the history of one cell: every version where the entry
@@ -18,24 +51,11 @@ export function CellHistoryScreen() {
   const nav = useNavigation();
   const sheetId = nav.params.sheetId;
   const ref = nav.params.ref;
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (sheetId === undefined || ref === undefined) return;
-    setLoading(true);
-    setError(null);
-    void store
-      .showCellHistory(sheetId, ref)
-      .catch((reason: unknown) => {
-        const message = reason instanceof Error ? reason.message : String(reason);
-        setError(message);
-      })
-      .finally(() => setLoading(false));
-  }, [sheetId, ref, store]);
+  const { loading, error } = useCellHistory(store, sheetId, ref);
 
   const entries = store.cellHistory;
   const rows = buildHistoryRows(entries ?? [], lang, t("unchanged"));
+  const chosen = sheetId !== undefined && ref !== undefined;
 
   return (
     <section className="screen cell-history" aria-labelledby="cell-history-title">
@@ -44,16 +64,14 @@ export function CellHistoryScreen() {
       <button type="button" className="link-button" onClick={() => nav.back()}>
         {t("close")}
       </button>
-      {sheetId === undefined || ref === undefined ? (
-        <p className="empty-state">{t("placeholder")}</p>
-      ) : null}
+      {!chosen ? <p className="empty-state">{t("placeholder")}</p> : null}
       {loading ? <p className="empty-state">{t("loading")}</p> : null}
       {error !== null ? (
         <p className="error-note" role="alert">
           {t("error").replace("{reason}", error)}
         </p>
       ) : null}
-      {!loading && error === null && sheetId !== undefined && ref !== undefined ? (
+      {!loading && error === null && chosen ? (
         <CellHistoryBody
           ref_={ref}
           count={historyCount(entries)}

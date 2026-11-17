@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
-import type { ReactElement } from "react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { useState, type ReactElement } from "react";
 import { LangContext } from "../../i18n/lang";
 import { NavigationContext, type Navigation, type ScreenParams } from "../../router";
 import { StoreContext, type StoreAdapter } from "../../store";
@@ -54,6 +54,7 @@ function fakeStore(entries: HistoryEntry[] | null): StoreAdapter {
     startCombine: async () => undefined,
     chooseDisagreement: () => undefined,
     finalizeCombine: async () => undefined,
+    downloadCombinedWorkbook: () => undefined,
     cellHistory: entries,
     showCellHistory: async () => undefined,
     authorName: "",
@@ -89,6 +90,40 @@ async function renderScreen(
   await screen.findByRole("heading", { name: /Cell history|Histoire de la cellule/ });
 }
 
+/**
+ * Renders the screen with a store object rebuilt on every render, like the
+ * real snapshot: each read of the history updates the state, which produces
+ * a new store object.
+ */
+function SnapshotWrapper(props: {
+  onRead: (sheetId: number, ref: string) => Promise<void>;
+}): ReactElement {
+  const [, setTick] = useState(0);
+  const snapshot = {
+    ...fakeStore(history()),
+    showCellHistory: async (sheetId: number, ref: string) => {
+      await props.onRead(sheetId, ref);
+      setTick((tick) => tick + 1);
+    },
+  } as unknown as StoreAdapter;
+  return (
+    <LangContext.Provider value={{ lang: "en", setLang: () => undefined }}>
+      <NavigationContext.Provider
+        value={{
+          screen: "cell-history",
+          params: { sheetId: 1, ref: "B7" },
+          go: () => undefined,
+          back: () => undefined,
+        }}
+      >
+        <StoreContext.Provider value={snapshot}>
+          <CellHistoryScreen />
+        </StoreContext.Provider>
+      </NavigationContext.Provider>
+    </LangContext.Provider>
+  );
+}
+
 afterEach(cleanup);
 
 describe("CellHistoryScreen", () => {
@@ -122,6 +157,24 @@ describe("CellHistoryScreen", () => {
   it("asks for a cell when none is chosen", async () => {
     await renderScreen(fakeStore(history()), {});
     expect(screen.getByText(/Choose a cell in the comparison grid/)).toBeTruthy();
+  });
+
+  it("asks for the history only once, even when the store object changes", async () => {
+    // Before the fix, the screen depended on the store identity: each read
+    // produced a new snapshot, the effect ran again, and the screen looped
+    // until React gave up (error #185, maximum update depth exceeded).
+    const calls: { sheetId: number; ref: string }[] = [];
+    const read = async (sheetId: number, ref: string) => {
+      calls.push({ sheetId, ref });
+      // A loop is a failure, not a hang: stop after a few rounds.
+      if (calls.length > 5) throw new Error("the history is asked again and again");
+    };
+
+    render(<SnapshotWrapper onRead={read} />);
+    await screen.findByTestId("history-list");
+    await act(async () => undefined);
+
+    expect(calls).toEqual([{ sheetId: 1, ref: "B7" }]);
   });
 
   it("speaks French when the interface is French", async () => {
